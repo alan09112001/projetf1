@@ -1,0 +1,17 @@
+# Fichiers Python générés
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environnement virtuel (TRES IMPORTANT à ignorer)
+venv/
+.env
+
+# Données Docker (On ne versionne pas la base de données !)
+f1-cloud/influxdb_data/
+f1-cloud/grafana_data/
+f1-cloud/mosquitto_data/
+f1-cloud/mosquitto_log/
+
+# Fichiers système Mac
+.DS_Store

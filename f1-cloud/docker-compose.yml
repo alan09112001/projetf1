@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto
+    container_name: f1-mosquitto
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+
+  influxdb:
+    image: influxdb:1.8
+    container_name: f1-influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      - INFLUXDB_DB=f1_telemetry
+    volumes:
+      - influxdb_data:/var/lib/influxdb
+
+  telegraf:
+    image: telegraf
+    container_name: f1-telegraf
+    volumes:
+      - ./telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    depends_on:
+      - mosquitto
+      - influxdb
+
+  grafana:
+    image: grafana/grafana
+    container_name: f1-grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - influxdb
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  influxdb_data:
+  grafana_data:

@@ -1,0 +1,5 @@
+f1-23-telemetry
+flask
+flask-socketio
+paho-mqtt
+eventlet
