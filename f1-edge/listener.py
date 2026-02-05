@@ -33,11 +33,15 @@ def main():
     last_wears = [0, 0, 0, 0]
     last_lap_time_recorded = 0
     
-    # Flags pour le Live Timing (pour ne pas envoyer 50 fois le même secteur)
+    # --- MEMOIRE DES SECTEURS (Solution anti-zéros) ---
+    held_s1 = 0.0
+    held_s2 = 0.0
+    
+    # Flags pour éviter les doublons
     has_sent_s1 = False
     has_sent_s2 = False
 
-    print(f"📡 En attente des secteurs sur le port {UDP_PORT}...")
+    print(f"📡 En attente des données sur le port {UDP_PORT}...")
 
     while True:
         try:
@@ -53,10 +57,11 @@ def main():
                 last_lap_time_recorded = 0
                 has_sent_s1 = False
                 has_sent_s2 = False
+                held_s1, held_s2 = 0.0, 0.0
                 print(f"🔄 Nouvelle Session -> {current_driver_tag}")
             last_session_uid = packet.header.session_uid
 
-            # --- 2. GPS ---
+            # --- 2. GPS (Packet 0) ---
             if pid == 0:
                 motion = packet.car_motion_data[player_index]
                 payload = {
@@ -66,7 +71,7 @@ def main():
                 }
                 client.publish(MQTT_TOPIC, json.dumps(payload))
 
-            # --- 3. LIVE TIMING & LAP DATA ---
+            # --- 3. LIVE TIMING & LAP DATA (Packet 2) ---
             elif pid == 2:
                 lap_data = packet.lap_data[player_index]
                 dist = float(lap_data.total_distance)
@@ -79,6 +84,7 @@ def main():
                     last_lap_time_recorded = 0
                     has_sent_s1 = False
                     has_sent_s2 = False
+                    held_s1, held_s2 = 0.0, 0.0
                 elif dist > max_distance_reached:
                     max_distance_reached = dist
 
@@ -89,58 +95,65 @@ def main():
 
                 # --- A. ENVOI INSTANTANÉ SECTEUR 1 ---
                 if s1_ms > 0 and not has_sent_s1:
-                    print(f"⏱️ Secteur 1 Bouclé : {s1_ms/1000}s")
+                    held_s1 = float(s1_ms / 1000.0) # On mémorise
+                    print(f"⏱️ Secteur 1 Bouclé : {held_s1}s")
                     payload = {
-                        "sector_1": float(s1_ms / 1000.0),
-                        "lap_number": current_lap, # On est sur le tour en cours
+                        "sector_1": held_s1,
+                        "lap_number": current_lap,
                         "driver_name": current_driver_tag
                     }
                     client.publish(MQTT_TOPIC, json.dumps(payload))
-                    has_sent_s1 = True # Marqué comme envoyé pour ce tour
+                    has_sent_s1 = True
 
                 # --- B. ENVOI INSTANTANÉ SECTEUR 2 ---
                 if s2_ms > 0 and not has_sent_s2:
-                    print(f"⏱️ Secteur 2 Bouclé : {s2_ms/1000}s")
+                    held_s2 = float(s2_ms / 1000.0) # On mémorise
+                    print(f"⏱️ Secteur 2 Bouclé : {held_s2}s")
                     payload = {
-                        "sector_2": float(s2_ms / 1000.0),
+                        "sector_2": held_s2,
                         "lap_number": current_lap,
                         "driver_name": current_driver_tag
                     }
                     client.publish(MQTT_TOPIC, json.dumps(payload))
                     has_sent_s2 = True
 
-                # --- C. FIN DE TOUR (Calcul S3 et Total) ---
+                # --- C. FIN DE TOUR ---
                 current_last_lap_ms = lap_data.last_lap_time_in_ms
                 
+                # On détecte que le temps du dernier tour a changé
                 if current_last_lap_ms != last_lap_time_recorded and current_last_lap_ms > 0:
-                    # Le tour est fini !
                     lap_time_sec = current_last_lap_ms / 1000.0
-                    finished_lap = current_lap - 1 # Le tour qui vient de se finir
+                    finished_lap = current_lap - 1 
                     
-                    # On recalcule S3 pour être précis
-                    s1_sec = s1_ms / 1000.0
-                    s2_sec = s2_ms / 1000.0
-                    s3_sec = lap_time_sec - s1_sec - s2_sec
-                    if s3_sec < 0: s3_sec = 0.0
+                    # --- FILTRE ANTI TOUR 0 ---
+                    # On n'envoie les données que si c'est un vrai tour (>= 1)
+                    if finished_lap >= 1:
+                        # On calcule S3 avec les valeurs mémorisées
+                        s3_sec = lap_time_sec - held_s1 - held_s2
+                        if s3_sec < 0: s3_sec = 0.0 # Sécurité si le calcul foire
 
-                    print(f"🏁 Tour {finished_lap} FINI : {lap_time_sec}s")
+                        print(f"🏁 Tour {finished_lap} FINI : {lap_time_sec}s")
+                        
+                        payload = {
+                            "lap_time": lap_time_sec,
+                            "sector_1": held_s1, # On renvoie les valeurs mémorisées
+                            "sector_2": held_s2,
+                            "sector_3": s3_sec,
+                            "lap_number": finished_lap,
+                            "driver_name": current_driver_tag
+                        }
+                        client.publish(MQTT_TOPIC, json.dumps(payload))
                     
-                    payload = {
-                        "lap_time": lap_time_sec,
-                        "sector_1": s1_sec, # On renvoie tout pour consolider
-                        "sector_2": s2_sec,
-                        "sector_3": s3_sec,
-                        "lap_number": finished_lap,
-                        "driver_name": current_driver_tag
-                    }
-                    client.publish(MQTT_TOPIC, json.dumps(payload))
-                    
+                    # Mise à jour mémoire système
                     last_lap_time_recorded = current_last_lap_ms
-                    # RESET POUR LE NOUVEAU TOUR
+                    
+                    # RESET pour le prochain tour
                     has_sent_s1 = False
                     has_sent_s2 = False
+                    held_s1 = 0.0
+                    held_s2 = 0.0
 
-            # --- 4. TÉLÉMÉTRIE ---
+            # --- 4. TÉLÉMÉTRIE (Packet 6) ---
             elif pid == 6:
                 car = packet.car_telemetry_data[player_index]
                 if car.speed > 5 and max_distance_reached > 0:
@@ -156,7 +169,7 @@ def main():
                     }
                     client.publish(MQTT_TOPIC, json.dumps(payload))
 
-            # --- 5. ERS ---
+            # --- 5. ERS (Packet 7) ---
             elif pid == 7:
                 status = packet.car_status_data[player_index]
                 if max_distance_reached > 0:
@@ -171,7 +184,7 @@ def main():
                     }
                     client.publish(MQTT_TOPIC, json.dumps(payload))
 
-            # --- 6. USURE ---
+            # --- 6. USURE (Packet 10) ---
             elif pid == 10:
                 dmg = packet.car_damage_data[player_index]
                 if max_distance_reached > 0:
