@@ -3,3 +3,6 @@ flask
 flask-socketio
 paho-mqtt
 eventlet
+SpeechRecognition
+pyttsx3
+pyaudio
